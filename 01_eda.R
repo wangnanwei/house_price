@@ -9,7 +9,6 @@ ggplot(data=dtrain,aes(x=logSalePrice))+geom_histogram(fill="skyblue",colour = "
 
 
 
-dtrain$PoolQC
 
 
 # ---------------------------------------------------------------------------
@@ -78,3 +77,68 @@ print(
 
 # 5. Sanity check: every column accounted for exactly once.
 cat("columns profiled:", nrow(prof), "\n")
+
+
+# ---------------------------------------------------------------------------
+# Section: inspect one variable at a time
+# ---------------------------------------------------------------------------
+# profile_cols() gives the mechanical facts for all 79 columns in one table.
+# This section is the next pass: one variable, its distribution, its outliers
+# and its relationship with the target — the evidence behind each `Decision`
+# cell in codebook.md. Call it as you walk through a family.
+
+library(patchwork)
+
+inspect_col <- function(df, nm) {
+  x <- df[[nm]]
+  y <- df$logSalePrice
+  cat("\n--- ", nm, " ---\n", sep = "")
+
+  if (is.numeric(x)) {
+    q <- quantile(x, c(0, .25, .5, .75, 1), na.rm = TRUE)
+    cat("numeric | NA:", sum(is.na(x)),
+        "| zeros:", round(100 * mean(x == 0, na.rm = TRUE), 1), "%",
+        "| distinct:", n_distinct(x, na.rm = TRUE),
+        "| cor with log price:", round(cor(x, y, use = "complete.obs"), 3), "\n")
+    cat("min | Q1 | median | Q3 | max:", paste(round(q, 1), collapse = " | "), "\n")
+
+    p1 <- ggplot(tibble(x = x), aes(x = x)) +
+      geom_histogram(fill = "skyblue", colour = "black", bins = 30) +
+      labs(x = nm, y = NULL, title = "distribution")
+
+    p2 <- ggplot(tibble(x = x, y = y), aes(x = x, y = y)) +
+      geom_point(alpha = 0.4) +
+      geom_smooth(method = "loess", se = FALSE, colour = "firebrick") +
+      labs(x = nm, y = "log price", title = "against the target")
+
+    print(p1 + p2)
+
+  } else {
+    # Levels sorted by median price: shows both the ordering and how few
+    # houses sit in each level, which is what decides "dummy or drop".
+    lv <- tibble(x = x, y = y) |>
+      group_by(level = replace_na(x, "(NA)")) |>
+      summarise(n = n(), median_log = median(y, na.rm = TRUE), .groups = "drop") |>
+      arrange(median_log)
+
+    print(lv, n = 30)
+
+    print(
+      ggplot(lv, aes(x = median_log, y = fct_reorder(level, median_log), fill = n)) +
+        geom_col() +
+        labs(x = "median log price", y = NULL, title = nm, fill = "houses")
+    )
+  }
+  invisible(NULL)
+}
+
+# Several columns in a row — handy for one family at a time.
+inspect_cols <- function(df, cols) {
+  for (nm in cols) inspect_col(df, nm)
+}
+
+# Usage examples (run them one at a time in the console):
+# inspect_col(dtrain, "GrLivArea")
+# inspect_col(dtrain, "OverallQual")
+# inspect_col(dtrain, "Neighborhood")
+# inspect_cols(dtrain, c("LotArea", "LotFrontage"))
