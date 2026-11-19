@@ -23,6 +23,7 @@ drop_cols <- c(
   "PoolQC", "PoolArea", "MiscFeature", "MiscVal", "3SsnPorch",      # <=7 houses
   "LowQualFinSF", "BsmtFinSF2", "BsmtHalfBath", "KitchenAbvGr",     # 90%+ zero
   "Heating", "MoSold", "Alley",                                     # no signal
+  "MSSubClass",                                                     # 15-level code
   "Exterior2nd"                                                     # duplicate of Exterior1st
 )
 
@@ -133,6 +134,9 @@ test  <- fill_leftovers(test,  train, "test ")
 # The step at zero is what these areas really contribute: a house with a 200
 # sq ft deck is not "200 units better", it is a different kind of house. The
 # flag carries that, the area carries the size.
+# No has_garage flag: "no garage" is already the "None" level of GarageType,
+# and both cannot enter the same fit (they are exact complements, so lm()
+# would return NA for one of them).
 flag_me <- function(df) {
   df |> mutate(
     has_2nd_floor      = as.integer(`2ndFlrSF`    > 0),
@@ -142,7 +146,6 @@ flag_me <- function(df) {
     has_screen_porch   = as.integer(ScreenPorch   > 0),
     has_fireplace      = as.integer(Fireplaces    > 0),
     has_bsmt           = as.integer(TotalBsmtSF   > 0),
-    has_garage         = as.integer(GarageCars    > 0),
     has_fence          = as.integer(!is.na(Fence))
   )
 }
@@ -154,39 +157,42 @@ test  <- flag_me(test)
 train <- train |> select(-Fence, -EnclosedPorch, -ScreenPorch)
 test  <- test  |> select(-Fence, -EnclosedPorch, -ScreenPorch)
 
-# 6. Dummy-code the nominal columns -----------------------------------
-# Levels with fewer than 10 houses in train are pooled into "Other": a
-# coefficient estimated from 3 houses is noise with a standard error. Test
-# levels the model never saw also fall into "Other", so predict() cannot
-# fail on an unseen level.
-nom_cols <- c("MSSubClass", "MSZoning", "LandContour", "LotConfig", "Neighborhood",
+# 6. Keep the nominal columns as factors -------------------------------
+# lm() builds the dummies itself, so the columns stay readable and R manages
+# the reference levels. What lm() sees is the same model matrix either way —
+# this changes what is stored, not the number of parameters fitted.
+#
+# Two things still have to be decided here, by us:
+#   - levels with fewer than 10 houses in train are pooled into "Other"
+#     (a coefficient from 3 houses is noise with a standard error attached)
+#   - NA in a nominal column means "none" (no garage, no veneer), so it
+#     becomes its own level instead of being imputed
+# And one thing is decided for step 4: test values the model never saw are
+# mapped to the reference level, so predict() cannot fail on a new level.
+nom_cols <- c("MSZoning", "LandContour", "LotConfig", "Neighborhood",
               "Condition1", "BldgType", "HouseStyle", "RoofStyle", "Exterior1st",
               "Foundation", "GarageType", "SaleType", "SaleCondition", "Electrical",
               "MasVnrType")
 
-dummies <- function(cols, tr, te, min_n = 10) {
-  out_tr <- list(); out_te <- list()
+to_factors <- function(cols, tr, te, min_n = 10) {
   for (nm in cols) {
     a <- as.character(tr[[nm]]); b <- as.character(te[[nm]])
-    # NA in a nominal column means "none" (no garage, no veneer), so it gets
-    # its own level rather than being merged into "Other".
     a[is.na(a)] <- "None"; b[is.na(b)] <- "None"
     tab  <- table(a, useNA = "no")
     keep <- names(tab)[tab >= min_n]
     a[!a %in% keep] <- "Other"
     b[!b %in% keep] <- "Other"
     lv <- sort(unique(a))
-    for (l in lv[-1]) {                      # first level is the reference
-      out_tr[[paste0(nm, "_", l)]] <- as.integer(a == l)
-      out_te[[paste0(nm, "_", l)]] <- as.integer(b == l)
-    }
+    b[!b %in% lv] <- lv[1]          # unseen test level -> reference level
+    tr[[nm]] <- factor(a, levels = lv)
+    te[[nm]] <- factor(b, levels = lv)
   }
-  list(tr = as_tibble(out_tr), te = as_tibble(out_te))
+  list(tr = tr, te = te)
 }
 
-dum <- dummies(nom_cols, train, test)
-train <- bind_cols(train, dum$tr) |> select(-all_of(nom_cols))
-test  <- bind_cols(test,  dum$te) |> select(-all_of(nom_cols))
+fac <- to_factors(nom_cols, train, test)
+train <- fac$tr
+test  <- fac$te
 
 # 7. Ages instead of years ---------------------------------------------
 # A year is not a quantity to put a slope on: 1900->1950 is not the same step
@@ -212,9 +218,10 @@ train <- train |> select(-any_of(redundant))
 test  <- test  |> select(-any_of(redundant))
 
 # 9. Column names must be formula-safe --------------------------------
-# "Wd Sdng" and "1.5Unf" contain a space and a leading digit; both break lm().
-names(train) <- str_replace_all(names(train), "[^A-Za-z0-9_]", "_")
-names(test)  <- str_replace_all(names(test),  "[^A-Za-z0-9_]", "_")
+# "Wd Sdng" (space), "1.5Unf" (dot) and "2ndFlrSF" (leading digit) all break
+# an explicit lm() formula. make.names() fixes all three; ~ . would hide it.
+names(train) <- make.names(names(train), unique = TRUE)
+names(test)  <- make.names(names(test),  unique = TRUE)
 
 # 10. Final shape ----------------------------------------------------
 train <- train |> select(Id, log_price, everything(), -SalePrice)
@@ -223,15 +230,38 @@ test  <- test  |> select(Id, everything())
 feat_tr <- setdiff(names(train), c("Id", "log_price"))
 feat_te <- setdiff(names(test),  "Id")
 stopifnot(identical(sort(feat_tr), sort(feat_te)),
-          all(map_lgl(train[feat_tr], is.numeric)))
+          all(map_lgl(train[feat_tr], ~ is.numeric(.x) || is.factor(.x))))
+
+# What lm() will actually fit: factors expand into dummies internally, so the
+# stored column count and the model matrix width are different numbers. Report
+# both, because that difference is what governs overfitting.
+mm_width <- ncol(model.matrix(~ . , data = train[feat_tr]))
 
 cat("\n== output ==\n")
-cat("features:", length(feat_tr), " (from 79)\n")
+cat("stored feature columns:", length(feat_tr), " (from 79)\n")
+n_fac  <- sum(map_lgl(train[feat_tr], is.factor))
+n_flag <- sum(str_starts(feat_tr, "has_"))
+n_ord  <- sum(feat_tr %in% c("LotShape", "ExterQual", "ExterCond", "BsmtQual", "BsmtCond",
+                             "HeatingQC", "KitchenQual", "FireplaceQu", "GarageQual",
+                             "GarageCond", "BsmtExposure", "BsmtFinType1", "BsmtFinType2",
+                             "GarageFinish", "Functional", "PavedDrive", "CentralAir"))
+n_num  <- length(feat_tr) - n_fac - n_flag - n_ord
+cat("of which: ordinals", n_ord, "| numeric/count", n_num,
+    "| flags", n_flag, "| factors", n_fac, "\n")
+cat("model matrix width (incl. intercept):", mm_width,
+    " -> parameters lm() fits:", mm_width - 1, "\n")
+cat("rows per parameter:", round(nrow(train) / (mm_width - 1), 1), "\n")
 cat("train:", nrow(train), "x", ncol(train), " | test:", nrow(test), "x", ncol(test), "\n")
 cat("train NA cells:", sum(is.na(train)), " | test NA cells:", sum(is.na(test)), "\n")
-cat("dropped:", length(drop_cols) + length(redundant) + 3 + 4, "columns",
-    "| ordinals: 17 | flags: 9 | dummies:", ncol(dum$tr), "\n")
+cat("dropped:", length(drop_cols) + length(redundant) + 3 + 4, "raw columns\n")
 
+cat("\nfactor levels:\n")
+for (nm in nom_cols) cat(sprintf("  %-14s %2d\n", nm, nlevels(train[[nm]])))
+
+# CSV for reading, RDS for modelling: a CSV cannot carry factor levels, and
+# re-reading it as character would silently lose which level is the reference.
 write_csv(train, "train_prepared.csv")
 write_csv(test,  "test_prepared.csv")
-cat("\nwritten: train_prepared.csv, test_prepared.csv\n")
+saveRDS(train, "train_prepared.rds")
+saveRDS(test,  "test_prepared.rds")
+cat("\nwritten: train_prepared.{csv,rds}, test_prepared.{csv,rds}\n")
