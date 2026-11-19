@@ -1,0 +1,12 @@
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Rapp.history
+*.Rcheck/
+*.Rproj.bak
+
+# Output that should not be tracked
+submission*.csv
+*.log
