@@ -1,135 +1,153 @@
-# Codebook — Ames Housing (79 columns)
+# Codebook — Ames Housing (79 columns), with profiling evidence
 
-**Source of definitions:** `data_description.txt` (Dean De Cock, as shipped with the competition).
-**Source of counts:** measured on `train.csv` (1,460 rows) — `n_distinct`, NA share, dominant value.
-**Status:** decisions are *proposals* for step 3 onward, not final. Step 1 records what exists; the
-right-hand column is a first reading of it.
+**Definitions:** `data_description.txt` (Dean De Cock, as shipped with the competition).
+**Measurements:** `profiling_metrics.csv`, produced by `03_profile_report.R` from `train.csv` (1,460 rows).
 
-Type vocabulary: **continuous** · **count** · **ordinal** (levels have an order, given in the cell) ·
-**nominal** (no order) · **flag** (binary) · **code** (numeric-looking, not a quantity).
+`cor` = Pearson correlation with `log1p(SalePrice)`. `quad` = R² gain from adding x² to a linear
+fit — the size of the *curvature*, i.e. how badly a straight line misses. `zero%` = share of
+exactly zero. `lv` = number of observed levels, `min n` = smallest level's house count, `spread`
+= range of median log price across levels, `rho` = Spearman correlation between the dictionary's
+level order and median price (|rho| = 1 means the documented order is exactly how price moves).
 
-NA vocabulary: **none** = a real category ("no pool"), **unknown** = genuinely missing, **—** = no NAs.
+Type vocabulary: **continuous** · **count** · **ordinal** (order given) · **nominal** (no order) ·
+**flag** (binary) · **code** (numeric-looking, not a quantity).
+NA vocabulary: **none** = a real category ("no pool") · **unknown** = genuinely missing · **—** = no NAs.
+
+---
+
+## The five problem classes found
+
+| Problem | Column count | Consequence for step 3 |
+|---|---|---|
+| Skewed (|skew| ≥ 1) | 19 | needs `log1p` before entering a linear fit |
+| Curvature (`quad` ≥ 0.02) | 13 | straight-line coefficient understates the effect |
+| Rare levels (`min n` < 10) | 25 | dummy coefficients unstable; group into "Other" |
+| Missing values | 19 | 14 are categories, only 4 are real gaps |
+| Weak signal (|cor| < 0.05, `quad` < 0.01) | 5 | candidates to drop |
+
+Overlap is heavy — one column often carries three tags, which is why 79 columns produce only
+~35 usable predictors without derivation. Full per-column tags: `profiling_metrics.csv`.
 
 ---
 
 ## 1. Structure, lot & location (22)
 
-| Column | Type | NA means | Decision |
-|---|---|---|---|
-| `MSSubClass` | code, 15 levels (20, 30, 60, 90, 190…) | — | factor. Numeric but a dwelling-type code; overlaps `BldgType` + `HouseStyle` |
-| `MSZoning` | nominal, 5 | — | factor |
-| `Street` | flag (Pave / Grvl) | — | **drop** — 1,454/1,460 Pave |
-| `Alley` | flag (Pave / Grvl) | none — no alley access | factor with a "None" level (93.8% none), or drop |
-| `LotShape` | ordinal Reg < IR1 < IR2 < IR3 | — | ordinal 0–3 |
-| `LandContour` | nominal, 4 | — | factor (90% Lvl) |
-| `Utilities` | flag (AllPub / NoSeWa) | — | **drop** — 1,459/1,460 AllPub |
-| `LotConfig` | nominal, 5 | — | factor |
-| `LandSlope` | ordinal Gtl < Mod < Sev | — | **drop** or binary — 95% Gtl |
-| `Neighborhood` | nominal, 25 | — | factor — the main location signal |
-| `Condition1` | nominal, 9 | — | factor |
-| `Condition2` | nominal, 8 | — | **drop** — 99% Norm |
-| `BldgType` | nominal, 5 | — | factor |
-| `HouseStyle` | nominal, 8 | — | factor |
-| `RoofStyle` | nominal, 6 | — | factor, or drop — 78% Gable |
-| `RoofMatl` | nominal, 8 | — | **drop** — 98% CompShg |
-| `Exterior1st` | nominal, 15 | — | factor; group levels with <10 houses |
-| `Exterior2nd` | nominal, 16 | — | factor — but near-duplicate of `Exterior1st`; keep one |
-| `MasVnrType` | nominal, 4 (+NA) | unknown (8 rows) | factor; the 8 NAs are houses with no veneer → "None" |
-| `Foundation` | nominal, 6 | — | factor |
-| `GarageType` | nominal, 6 | none — no garage | factor with a "None" level |
-| `GarageFinish` | ordinal Fin > RFn > Unf | none — no garage | ordinal 0–3, NA = 0 |
+| Column | Type | NA means | Evidence | Decision |
+|---|---|---|---|---|
+| `MSSubClass` | code, 15 lv | — | quad .035, cor −.07 | factor — curvature proves it is not a quantity |
+| `MSZoning` | nominal, 5 | — | min n 10, spread 1.02 | factor |
+| `Street` | flag | — | 99.6% Pave | **drop** |
+| `Alley` | flag | none | 93.8% none, 91 houses | **drop** or `has_alley` flag |
+| `LotShape` | ordinal 0–3 | — | spread .41 | ordinal |
+| `LandContour` | nominal, 4 | — | min n 36, spread .47 | factor |
+| `Utilities` | flag | — | 1 house not AllPub | **drop** |
+| `LotConfig` | nominal, 5 | — | min n 4 | factor, rare levels → "Other" |
+| `LandSlope` | ordinal, 3 | — | spread **.14**, rho −.5 | **drop** — 0.14 log units across all levels |
+| `Neighborhood` | nominal, 25 | — | min n 2, spread **1.28** | factor — largest single categorical effect; group `<10` |
+| `Condition1` | nominal, 9 | — | min n 2, spread .58 | factor, group rare |
+| `Condition2` | nominal, 8 | — | 99% Norm | **drop** |
+| `BldgType` | nominal, 5 | — | min n 31, spread .30 | factor |
+| `HouseStyle` | nominal, 8 | — | min n 8, spread .56 | factor, group rare |
+| `RoofStyle` | nominal, 6 | — | min n 2, spread .47 | `Gable` flag + Other |
+| `RoofMatl` | nominal, 8 | — | 98% CompShg | **drop** |
+| `Exterior1st` | nominal, 15 | — | min n **1**, spread 1.32 | factor — keep top 5 + "Other" |
+| `Exterior2nd` | nominal, 16 | — | min n 1, spread 1.11 | near-duplicate of `Exterior1st`; **keep one** |
+| `MasVnrType` | nominal, 4 | unknown (8) | min n 15 | factor; the 8 NAs are houses with no veneer → "None" |
+| `Foundation` | nominal, 6 | — | min n 3, spread .68 | factor, group rare |
+| `GarageType` | nominal, 6 | none | min n 6, spread .74 | factor + "None" level |
+| `GarageFinish` | ordinal 3 | none | rho **−1**, min n 352 | ordinal, NA = 0 |
 
 ## 2. Size / area (19)
 
-| Column | Type | NA means | Decision |
-|---|---|---|---|
-| `LotFrontage` | continuous (feet) | unknown, 17.7% | impute median **within** `Neighborhood` |
-| `LotArea` | continuous (sq ft) | — | log1p |
-| `MasVnrArea` | continuous (sq ft) | unknown (8 rows) | NA → 0; 59% are already 0 |
-| `BsmtFinSF1` | continuous (sq ft) | — | keep; 32% zero |
-| `BsmtFinSF2` | continuous (sq ft) | — | 89% zero — drop or fold into a total |
-| `BsmtUnfSF` | continuous (sq ft) | — | keep |
-| `TotalBsmtSF` | continuous (sq ft) | — | log1p — exactly `SF1 + SF2 + UnfSF`, so collinear with all three |
-| `1stFlrSF` | continuous (sq ft) | — | log1p |
-| `2ndFlrSF` | continuous (sq ft) | — | log1p, 57% zero |
-| `LowQualFinSF` | continuous (sq ft) | — | **drop** — 98% zero |
-| `GrLivArea` | continuous (sq ft) | — | log1p — strongest size predictor |
-| `WoodDeckSF` | continuous (sq ft) | — | keep, or flag (52% zero) |
-| `OpenPorchSF` | continuous (sq ft) | — | keep (45% zero) |
-| `EnclosedPorch` | continuous (sq ft) | — | flag (86% zero) |
-| `3SsnPorch` | continuous (sq ft) | — | **drop** or flag — 98% zero |
-| `ScreenPorch` | continuous (sq ft) | — | flag (92% zero) |
-| `PoolArea` | continuous (sq ft) | — | **drop** — 99.5% zero, same information as `PoolQC` |
-| `GarageArea` | continuous (sq ft) | — | log1p — duplicates `GarageCars` |
-| `MiscVal` | continuous ($) | — | **drop** or flag — 96% zero |
+| Column | Type | NA means | Evidence | Decision |
+|---|---|---|---|---|
+| `LotFrontage` | continuous | unknown 17.7% | skew 2.16, cor .36, 12 extreme | impute median **within** `Neighborhood`, then `log1p` |
+| `LotArea` | continuous | — | skew **12.2**, cor .26, quad .069, 34 extreme | `log1p` + cap at 99th pct |
+| `MasVnrArea` | continuous | unknown (8) | 59% zero, skew 2.66, cor .43 | NA → 0; flag + `log1p` |
+| `BsmtFinSF1` | continuous | — | 32% zero, cor .37 | keep |
+| `BsmtFinSF2` | continuous | — | **89% zero**, cor **.005** | **drop** |
+| `BsmtUnfSF` | continuous | — | cor .22 | keep |
+| `TotalBsmtSF` | continuous | — | cor **.61**, quad .028 | `log1p`; = SF1+SF2+UnfSF, so collinear with all three |
+| `1stFlrSF` | continuous | — | cor .60, quad .024 | `log1p` |
+| `2ndFlrSF` | continuous | — | 57% zero, quad **.087** | presence flag + `log1p` |
+| `LowQualFinSF` | continuous | — | 98% zero, cor −.04 | **drop** |
+| `GrLivArea` | continuous | — | cor **.70**, quad .045 | `log1p` — strongest size predictor |
+| `WoodDeckSF` | continuous | — | 52% zero, cor .33 | flag + `log1p` |
+| `OpenPorchSF` | continuous | — | 45% zero, quad .075 | flag + `log1p` |
+| `EnclosedPorch` | continuous | — | 86% zero, cor **−.15** | flag only; **negative** sign to investigate |
+| `3SsnPorch` | continuous | — | 98% zero | **drop** |
+| `ScreenPorch` | continuous | — | 92% zero, cor .12 | flag only |
+| `PoolArea` | continuous | — | 99.5% zero, 7 houses | **drop** |
+| `GarageArea` | continuous | — | cor .65 | duplicates `GarageCars` (.68); **keep one** |
+| `MiscVal` | continuous | — | 96% zero, cor −.02 | **drop** |
 
-## 3. Quality / condition (ordinal) (17)
+## 3. Quality / condition (17)
 
-| Column | Type | NA means | Decision |
-|---|---|---|---|
-| `OverallQual` | ordinal 1–10 | — | keep as numeric — 0.79 correlation with price, strongest single variable |
-| `OverallCond` | ordinal 1–10 | — | keep as numeric, but 56% are 5, so little spread |
-| `ExterQual` | ordinal Po < Fa < TA < Gd < Ex (4 observed) | — | 0–5 |
-| `ExterCond` | ordinal, 5 | — | 0–5 — 88% TA, nearly constant |
-| `BsmtQual` | ordinal, 4 observed | none — no basement | 0–5, NA = 0 |
-| `BsmtCond` | ordinal, 4 observed | none — no basement | 0–5, NA = 0 — 92% TA |
-| `BsmtExposure` | ordinal Gd > Av > Mn > No | none — no basement | 0–4, NA = 0 |
-| `BsmtFinType1` | ordinal GLQ > ALQ > BLQ > Rec > LwQ > Unf | none — no basement | 0–6, NA = 0 |
-| `BsmtFinType2` | ordinal, same scale | none — no basement | 0–6, NA = 0 — 88% Unf |
-| `HeatingQC` | ordinal, 5 | — | 0–5 |
-| `KitchenQual` | ordinal, 4 observed | — | 0–5 |
-| `Functional` | ordinal Typ > Min1 > Min2 > Mod > Maj1 > Maj2 > Sev > Sal (7 observed) | — | 0–7 — 93% Typ |
-| `FireplaceQu` | ordinal, 5 | none — no fireplace | 0–5, NA = 0 |
-| `GarageQual` | ordinal, 5 | none — no garage | 0–5, NA = 0 — 95% TA |
-| `GarageCond` | ordinal, 5 | none — no garage | 0–5, NA = 0 — 96% TA |
-| `PavedDrive` | ordinal Y > P > N | — | 0–2, or flag — 92% Y |
-| `PoolQC` | ordinal, 3 observed | none — no pool | **drop** — 99.5% none |
+| Column | Type | NA means | Evidence | Decision |
+|---|---|---|---|---|
+| `OverallQual` | ordinal 1–10 | — | cor **.82**, quad .001 | keep numeric — no curvature at all |
+| `OverallCond` | ordinal 1–10 | — | cor **−.04**, quad **.029** | ordinal levels, not a slope; negative sign to investigate |
+| `ExterQual` | ordinal 4 | — | rho **−1**, spread **1.49** | ordinal 0–5 |
+| `ExterCond` | ordinal 5 | — | rho −.7, min n **1** | ordinal; group rare (88% TA) |
+| `BsmtQual` | ordinal 4 | none | rho **−1**, NA → 0 | ordinal 0–5, NA = 0 |
+| `BsmtCond` | ordinal 4 | none | rho −1, min n **2**, 92% TA | ordinal; nearly constant |
+| `BsmtExposure` | ordinal 4 | none | rho **−1**, min n 114 | ordinal 0–4, NA = 0 |
+| `BsmtFinType1` | ordinal 6 | none | spread .43 | ordinal 0–6, NA = 0 |
+| `BsmtFinType2` | ordinal 6 | none | 88% Unf | **flag** `has_bsmt_fin2` instead of 6 dummies |
+| `HeatingQC` | ordinal 5 | — | rho **−1**, min n 1 | ordinal 0–5, group rare |
+| `KitchenQual` | ordinal 4 | — | rho **−1**, spread 1.01 | ordinal 0–5 |
+| `Functional` | ordinal 7 | — | rho −.71, min n **1** | ordinal 0–7, group rare (93% Typ) |
+| `FireplaceQu` | ordinal 5 | none | rho **−1**, NA → 0 | ordinal 0–5, NA = 0 |
+| `GarageQual` | ordinal 5 | none | rho −.7, min n **3**, 95% TA | ordinal; nearly constant |
+| `GarageCond` | ordinal 5 | none | rho −.6, min n 2, 96% TA | ordinal; nearly constant |
+| `PavedDrive` | ordinal 3 | — | spread .42, 92% Y | flag `Paved` |
+| `PoolQC` | ordinal 3 | none | 99.5% none, 7 houses | **drop** |
 
 ## 4. Age / time (5)
 
-| Column | Type | NA means | Decision |
-|---|---|---|---|
-| `YearBuilt` | year | — | derive `Age = YrSold − YearBuilt` |
-| `YearRemodAdd` | year | — | derive `RemodAge = YrSold − YearRemodAdd` |
-| `GarageYrBlt` | year | none — no garage | NA → `YearBuilt`; derive garage age |
-| `MoSold` | month, 1–12 | — | factor (seasonality), not continuous |
-| `YrSold` | year, 5 levels | — | factor; also only used to build the age features |
+| Column | Type | NA means | Evidence | Decision |
+|---|---|---|---|---|
+| `YearBuilt` | year | — | cor .59, quad **.062** | age + age² (or spline) — straight line misses badly |
+| `YearRemodAdd` | year | — | cor .57, quad .000 | derive `remod_age`, then linear is fine |
+| `GarageYrBlt` | year | none | cor .54, quad .045, NA 81 | NA → `YearBuilt`; test has a **2207** typo — clip |
+| `MoSold` | month | — | cor **.06** | **drop** as predictor, or a `peak_season` flag |
+| `YrSold` | year, 5 lv | — | cor **−.04** | **drop** — use only to build the age features |
 
 ## 5. Rooms & counts (9)
 
-| Column | Type | NA means | Decision |
-|---|---|---|---|
-| `BsmtFullBath` | count 0–3 | — | keep |
-| `BsmtHalfBath` | count 0–2 | — | keep, or merge into `TotalBath` — 94% zero |
-| `FullBath` | count 0–3 | — | keep |
-| `HalfBath` | count 0–2 | — | keep |
-| `BedroomAbvGr` | count 0–8 | — | keep |
-| `KitchenAbvGr` | count 1–3 | — | **drop** or fold — 95% are 1 |
-| `TotRmsAbvGrd` | count 2–14 | — | keep, but strongly correlated with `GrLivArea` |
-| `Fireplaces` | count 0–3 | — | keep (47% zero) |
-| `GarageCars` | count 0–4 | — | keep — 0.64 correlation; collinear with `GarageArea` |
+| Column | Type | NA means | Evidence | Decision |
+|---|---|---|---|---|
+| `BsmtFullBath` | count 0–3 | — | 59% zero, cor .24 | keep |
+| `BsmtHalfBath` | count 0–2 | — | **94% zero**, cor −.005 | **drop** |
+| `FullBath` | count 0–3 | — | cor **.60** | keep |
+| `HalfBath` | count 0–2 | — | 63% zero, cor .31 | keep |
+| `BedroomAbvGr` | count 0–8 | — | cor .21, 1 extreme | keep |
+| `KitchenAbvGr` | count 1–3 | — | **95% are 1**, cor −.15 | **drop** |
+| `TotRmsAbvGrd` | count 2–14 | — | cor .53 | keep; heavily collinear with `GrLivArea` |
+| `Fireplaces` | count 0–3 | — | 47% zero, quad .024 | flag + count |
+| `GarageCars` | count 0–4 | — | cor **.68** | keep; the garage measure to retain |
 
 ## 6. Systems (3)
 
-| Column | Type | NA means | Decision |
-|---|---|---|---|
-| `Heating` | nominal, 6 | — | **drop** — 98% GasA |
-| `CentralAir` | flag (Y / N) | — | factor — 93% Y, but the 7% is a real signal |
-| `Electrical` | nominal, 5 | unknown (1 row) | mode impute; 91% SBrkr |
+| Column | Type | NA means | Evidence | Decision |
+|---|---|---|---|---|
+| `Heating` | nominal, 6 | — | 98% GasA, min n 1 | **drop** |
+| `CentralAir` | flag | — | min n **95**, spread .54 | keep flag — only 7% N, and it is real signal |
+| `Electrical` | nominal, 5 | unknown (1) | 91% SBrkr, min n 1 | mode impute, collapse to 2 levels |
 
 ## 7. Extras present / absent (2)
 
-| Column | Type | NA means | Decision |
-|---|---|---|---|
-| `Fence` | nominal, 4 | none — no fence | **drop**, or a single `has_fence` flag |
-| `MiscFeature` | nominal, 4 | none — none | **drop**, or a flag — 96% none |
+| Column | Type | NA means | Evidence | Decision |
+|---|---|---|---|---|
+| `Fence` | nominal, 4 | none | 81% none, spread **.25** | `has_fence` flag only |
+| `MiscFeature` | nominal, 4 | none | 96% none, min n 1 | **drop** |
 
 ## 8. Sale (2)
 
-| Column | Type | NA means | Decision |
-|---|---|---|---|
-| `SaleType` | nominal, 9 | — | factor; 87% WD, group the rest |
-| `SaleCondition` | nominal, 6 | — | factor — 82% Normal; `Partial` and `New` matter |
+| Column | Type | NA means | Evidence | Decision |
+|---|---|---|---|---|
+| `SaleType` | nominal, 9 | — | 87% WD, min n 2 | factor, group rare |
+| `SaleCondition` | nominal, 6 | — | spread **.88**, min n 4 | keep — price varies a lot; `Partial`/`New` matter |
 
 ---
 
@@ -137,19 +155,28 @@ NA vocabulary: **none** = a real category ("no pool"), **unknown** = genuinely m
 
 **Every column appears exactly once:** 22 + 19 + 17 + 5 + 9 + 3 + 2 + 2 = **79**.
 
-**`NA` is a category, not a gap** — 14 columns, confirmed by the dictionary listing `NA` as a level:
+**`NA` is a category, not a gap** — 14 columns, per the dictionary: `Alley` (93.8%), `BsmtQual`,
+`BsmtCond`, `BsmtFinType1`, `BsmtFinType2` (2.5%), `BsmtExposure` (2.6%), `FireplaceQu` (47.3%),
+`GarageType` / `GarageFinish` / `GarageQual` / `GarageCond` (5.5%), `PoolQC` (99.5%),
+`Fence` (80.8%), `MiscFeature` (96.3%).
 
-`Alley` (93.8% none), `Fence` (80.8%), `MiscFeature` (96.3%), `PoolQC` (99.5%),
-`FireplaceQu` (47.3%), `GarageType` / `GarageFinish` / `GarageQual` / `GarageCond` (5.5% each),
-`BsmtQual` / `BsmtCond` / `BsmtFinType1` / `BsmtFinType2` (2.5%), `BsmtExposure` (2.6%).
+**Genuinely missing — all four:** `LotFrontage` 17.7%, `MasVnrType` / `MasVnrArea` 8 rows,
+`Electrical` 1 row.
 
-**Genuinely missing** (must be imputed or the rows lost): `LotFrontage` 17.7%,
-`MasVnrType` / `MasVnrArea` 0.5% (8 rows), `Electrical` 1 row. That is all.
+**Documented order matches price** — 8 columns at |rho| = 1.00 (`ExterQual`, `BsmtQual`,
+`BsmtCond`, `BsmtExposure`, `HeatingQC`, `KitchenQual`, `FireplaceQu`, `GarageFinish`). The
+ordering in the dictionary is the ordering in the data, so one ordinal column beats 4–5 dummies.
 
-**Near-constant, ≥95% one value** — 12 columns carrying almost no information:
-`Utilities` (99.9%), `Street` (99.6%), `Condition2` (99.0%), `RoofMatl` (98.2%),
-`Heating` (97.8%), `LowQualFinSF` (98.2% zero), `3SsnPorch` (98.4% zero), `PoolArea` (99.5% zero),
-`MiscVal` (96.4% zero), `KitchenAbvGr` (95.3% one), `GarageQual` (95.1% TA), `GarageCond` (96.2% TA).
+**Order is imperfect** where rare levels distort it: `Functional` −.71 (min n 1), `ExterCond`
+−.70 (min n 1), `GarageQual` −.70 (min n 3), `GarageCond` −.60 (min n 2). Group the rare levels
+first, then encode.
 
-**Numeric-looking codes / cycles:** `MSSubClass` (type code), `MoSold` (month), `YrSold` (5 years).
-These are factors, not quantities; treat them as continuous and the coefficient is meaningless.
+**Curvature is not always what it looks like.** `2ndFlrSF` (.087), `OpenPorchSF` (.075),
+`EnclosedPorch`, `WoodDeckSF`, `ScreenPorch`, `3SsnPorch` all pile up at zero. Their R² gain from
+x² is mostly the *step* at zero — presence versus absence — not a smooth bend. `YearBuilt` (.062)
+and `LotArea` (.069) are the genuine curves: a straight line really does miss them.
+
+**Two negative correlations worth a look before trusting the coefficient:** `EnclosedPorch`
+(−.15) and `KitchenAbvGr` (−.15), plus `OverallCond` (−.04) with curvature. Negative is plausible
+here (`OverallCond` is high on old houses), but a linear fit will hand you a negative price
+effect, which needs to be explained rather than shipped.
